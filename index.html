@@ -2688,7 +2688,11 @@
       rearBumper.position.set(0, 0.42, -VL * 0.502);
       grp.add(rearBumper);
 
-      // Wheel arches and wheels (front + rear, both sides)
+      // Wheel arches and wheels (front + rear, both sides).
+      // Tires and rims are collected in userData.wheels so the
+      // animation loop can spin them with road speed.
+      grp.userData.wheels = [];
+      grp.userData.wheelRadius = 0.42;
       function addWheel(zPos){
         for (let s = -1; s <= 1; s += 2){
           // Tire
@@ -2698,12 +2702,14 @@
           tire.position.set(s * (VW / 2 - 0.05), 0.42, zPos);
           tire.castShadow = true;
           grp.add(tire);
+          grp.userData.wheels.push(tire);
           // Rim (slightly recessed, lighter)
           const rimG = new THREE.CylinderGeometry(0.22, 0.22, 0.36, 12);
           const rim = new THREE.Mesh(rimG, rimMat);
           rim.rotation.z = Math.PI / 2;
           rim.position.set(s * (VW / 2 - 0.04), 0.42, zPos);
           grp.add(rim);
+          grp.userData.wheels.push(rim);
           // Wheel arch (small dark fender flare)
           const arch = new THREE.Mesh(
             new THREE.BoxGeometry(0.12, 0.5, 1.05), trimMat
@@ -2896,12 +2902,27 @@
       [-30.0,  -35.25 ],
       [-22.0,  -22.0  ]
     ];
-    const DV_PARK_IDX = 3;       // index of the parking-spot waypoint
+    // Round the loop's hard corners into arcs so the van steers through
+    // turns instead of pivoting at a point. The parking waypoint sits on
+    // a straight east-west stretch, so remapping it to the nearest point
+    // of the rounded path keeps it effectively in place.
+    const dvParkRaw = dvPath[3];
+    const dvPathR = buildRoundedRectPath(dvPath, 2.4, 4);
+    let DV_PARK_IDX = 0;
+    {
+      let best = 1e9;
+      for (let i = 0; i < dvPathR.length; i++){
+        const dx = dvPathR[i][0] - dvParkRaw[0];
+        const dz = dvPathR[i][1] - dvParkRaw[1];
+        const d2 = dx * dx + dz * dz;
+        if (d2 < best){ best = d2; DV_PARK_IDX = i; }
+      }
+    }
 
     // The van itself, placed at path[0] facing the next waypoint
     const dvVan = makeAmazonVan();
     {
-      const a = dvPath[0], b = dvPath[1];
+      const a = dvPathR[0], b = dvPathR[1];
       const yaw0 = Math.atan2(b[0] - a[0], b[1] - a[1]);
       dvVan.position.set(a[0], groundY + 0.05, a[1]);
       dvVan.rotation.y = yaw0;
@@ -2953,19 +2974,22 @@
 
     // Hand control off to the outer-scope DELIVERY object so the main
     // animation loop can step the state machine each frame.
-    const a0 = dvPath[0], b0 = dvPath[1];
+    const a0 = dvPathR[0], b0 = dvPathR[1];
     DELIVERY.ready      = true;
     DELIVERY.van        = dvVan;
     DELIVERY.driver     = dvDriver;
     DELIVERY.carried    = dvCarried;
     DELIVERY.dropped    = dvDropped;
-    DELIVERY.path       = dvPath;
+    DELIVERY.path       = dvPathR;
     DELIVERY.parkIdx    = DV_PARK_IDX;
     DELIVERY.driverIn   = dvDriverIn;
     DELIVERY.driverOut  = dvDriverOut;
     DELIVERY.segIdx     = 0;
     DELIVERY.segT       = 0;
     DELIVERY.speed      = 5.5;
+    DELIVERY.curSpeed   = 0;      // ramps up/down; the van never teleports between speeds
+    DELIVERY.gaitAmp    = 0;      // 0..1 envelope: limbs swing while walking, rest when stopped
+    DELIVERY.walkPhase  = 0;
     DELIVERY.walkSpeed  = 1.4;
     DELIVERY.currentYaw = Math.atan2(b0[0]-a0[0], b0[1]-a0[1]);
     DELIVERY.phase      = 'driving_in';
@@ -3593,6 +3617,8 @@
   // Camera is ~10 units above ground at radius 50, parked south-southwest
   // and aimed at the central building's center.
   let camRadius = 50, camAngle = -Math.PI / 2 - 0.4, camHeight = 6;
+  // Inertia targets: drag/scroll move these; the camera glides after them.
+  let camRadiusT = camRadius, camAngleT = camAngle, camHeightT = camHeight;
   // Camera look-target — defaults to origin, but click-to-frame-room
   // moves it toward the picked room and tweens it back over time.
   // X/Z are world coords; Y is in "house space" (we apply -BUILDING_H/2 in updateCam).
@@ -5040,7 +5066,10 @@
       }
     } else {
       const dir = Math.sign(elevState.targetY - elevCab.position.y);
-      const speed = 0.045;
+      const dist = Math.abs(elevState.targetY - elevCab.position.y);
+      // Ease out over the last unit of travel; keep a floor speed so the
+      // cab settles rather than crawling asymptotically.
+      const speed = Math.min(0.045, Math.max(0.008, dist * 0.045));
       elevCab.position.y += dir * speed;
       if ((dir > 0 && elevCab.position.y > elevState.targetY) ||
           (dir < 0 && elevCab.position.y < elevState.targetY)){
@@ -6272,9 +6301,21 @@
 
   let deliveredCount = 0;
   let humanState = 'idle';
+  let humanWalkPhase = 0;   // gait cycle accumulator for the sorter
+  let humanGaitAmp = 0;     // 0..1 envelope: swing while walking, rest when stopped
   let humanHeldPkg = null;
 
   function updateCounter(){ counterEl.textContent = 'Delivered: ' + deliveredCount + ' of ' + packages.length; }
+
+  // Turn a mover's yaw toward a target heading through the shortest arc
+  // (no snapping). Called once per fixed sim step; k is the per-step gain.
+  function smoothYaw(mover, targetYaw, k){
+    if (mover.userData._yaw === undefined) mover.userData._yaw = mover.rotation.y;
+    let delta = targetYaw - mover.userData._yaw;
+    delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+    mover.userData._yaw += delta * (k || 0.22);
+    mover.rotation.y = mover.userData._yaw;
+  }
 
   function driveTo(mover, target, yFixed, baseSpeed){
     const speed = (baseSpeed || BASE_DRIVE_SPEED);
@@ -6283,11 +6324,13 @@
     const dz = target.z - mover.position.z;
     const d = Math.hypot(dx, dz);
     if (d < 0.05){ mover.position.y = y; return true; }
-    const step = Math.min(speed, d);
+    // Ease-out arrival: slow to ~30% over the last stretch instead of
+    // moving at full speed until the stop threshold.
+    const step = Math.min(speed * Math.min(1, d / 1.2 + 0.3), d);
     mover.position.x += (dx / d) * step;
     mover.position.z += (dz / d) * step;
     mover.position.y = y;
-    mover.rotation.y = Math.atan2(dx, dz);
+    smoothYaw(mover, Math.atan2(dx, dz), 0.22);
     return false;
   }
 
@@ -6381,9 +6424,10 @@
   }
 
   function updateHuman(driveSpeed){
+    let humanMoving = false;
     if (humanState === 'idle'){
       const next = inbox.find(p => p.state === 'inbox');
-      if (!next) return;
+      if (!next){ updateHumanGait(false); return; }
       humanHeldPkg = next;
       humanState = 'pickingUp';
     }
@@ -6396,16 +6440,21 @@
         pkg.group.position.set(0, 1.35, 0.25);
         pkg.state = 'carrying';
         humanState = 'carrying';
+      } else {
+        humanMoving = true;
       }
     }
     else if (humanState === 'carrying'){
       const loadStand = new THREE.Vector3(UP_X - 1.0, 0, CONV_Z);
       if (driveTo(humanGroup, loadStand, 0, driveSpeed * 1.3)){
-        humanGroup.rotation.y = Math.PI / 2;
         humanState = 'waiting';
+      } else {
+        humanMoving = true;
       }
     }
     else if (humanState === 'waiting'){
+      // Ease around to face the conveyor load point (no snap turn)
+      smoothYaw(humanGroup, Math.PI / 2, 0.15);
       const found = findEmptyCarrierNearLoad();
       const syncWindow = 0.025 * Math.max(1, simSpeed * 0.8);
       if (found.carrier && found.distAlongLoop < syncWindow){
@@ -6423,6 +6472,21 @@
         setStatus('On loop. ' + remaining + ' left to sort.');
       }
     }
+    updateHumanGait(humanMoving);
+  }
+
+  // Sorter walk cycle: subtle limb swing + body bob while traveling,
+  // easing back to the rest pose when standing. Runs once per sim step.
+  function updateHumanGait(moving){
+    const target = moving ? 1 : 0;
+    humanGaitAmp += Math.max(-0.1, Math.min(0.1, target - humanGaitAmp));
+    if (humanGaitAmp > 0.01) humanWalkPhase += 0.14;
+    const swing = Math.sin(humanWalkPhase) * 0.3 * humanGaitAmp;
+    legL.rotation.x =  swing;
+    legR.rotation.x = -swing;
+    armL.rotation.x = -0.4 - swing * 0.7;
+    armR.rotation.x = -0.4 + swing * 0.7;
+    humanGroup.position.y += (Math.abs(Math.sin(humanWalkPhase)) * 0.03 * humanGaitAmp - humanGroup.position.y) * 0.5;
   }
 
   function updateRobot(r, driveSpeed, armSpeed){
@@ -6553,7 +6617,10 @@
     canvas.style.cursor = 'grabbing';
     // Drags cancel an in-progress click-to-frame, but not a scripted
     // zoom transition (entering / exiting walk mode).
-    if (camAnim && !_zoomTransitioning) camAnim = null;
+    if (camAnim && !_zoomTransitioning){
+      camAnim = null;
+      camAngleT = camAngle; camHeightT = camHeight; camRadiusT = camRadius;
+    }
   });
   window.addEventListener('mouseup', () => { dragging = false; canvas.style.cursor = 'grab'; });
   window.addEventListener('mousemove', e => {
@@ -6562,24 +6629,28 @@
     const dx = e.clientX - lastX, dy = e.clientY - lastY;
     dragDist += Math.abs(dx) + Math.abs(dy);
     lastX = e.clientX; lastY = e.clientY;
-    // Spec: dx * 0.005 (positive), camHeight clamped -38..28
-    camAngle += dx * 0.005;
-    camHeight = Math.max(-38, Math.min(28, camHeight + dy * 0.05));
+    // Spec: dx * 0.005 (positive), camHeight clamped -38..28.
+    // Input steers the inertia targets; the render loop glides the camera.
+    camAngleT += dx * 0.005;
+    camHeightT = Math.max(-38, Math.min(28, camHeightT + dy * 0.05));
   });
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
-    camRadius = Math.max(14, Math.min(70, camRadius + e.deltaY * 0.03));
-    if (camAnim && !_zoomTransitioning) camAnim = null;
+    if (camAnim && !_zoomTransitioning){
+      camAnim = null;
+      camAngleT = camAngle; camHeightT = camHeight; camRadiusT = camRadius;
+    }
+    camRadiusT = Math.max(14, Math.min(70, camRadiusT + e.deltaY * 0.03));
   }, { passive:false });
-  canvas.addEventListener('touchstart', e => { if (e.touches.length===1){ dragging=true; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; dragDist=0; if (camAnim && !_zoomTransitioning) camAnim=null; } });
+  canvas.addEventListener('touchstart', e => { if (e.touches.length===1){ dragging=true; lastX=e.touches[0].clientX; lastY=e.touches[0].clientY; dragDist=0; if (camAnim && !_zoomTransitioning){ camAnim=null; camAngleT=camAngle; camHeightT=camHeight; camRadiusT=camRadius; } } });
   canvas.addEventListener('touchmove', e => {
     if (!dragging || e.touches.length!==1) return;
     const dx = e.touches[0].clientX - lastX, dy = e.touches[0].clientY - lastY;
     dragDist += Math.abs(dx) + Math.abs(dy);
     lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
     // Spec: dx * 0.005 (positive), camHeight clamped -38..28
-    camAngle += dx * 0.005;
-    camHeight = Math.max(-38, Math.min(28, camHeight + dy * 0.05));
+    camAngleT += dx * 0.005;
+    camHeightT = Math.max(-38, Math.min(28, camHeightT + dy * 0.05));
   }, { passive:true });
   canvas.addEventListener('touchend', () => dragging = false);
 
@@ -6686,6 +6757,8 @@
     if (k >= 1){
       const cb = camAnim.onComplete;
       camAnim = null;
+      // Land the inertia targets on the final pose so the camera stays put
+      camAngleT = camAngle; camHeightT = camHeight; camRadiusT = camRadius;
       if (cb) cb();
     }
   }
@@ -7174,6 +7247,9 @@
       camAngle  = finalAngle;
       camRadius = finalRadius;
       camHeight = finalHeight;
+      camAngleT = finalAngle;
+      camRadiusT = finalRadius;
+      camHeightT = finalHeight;
       camLookTarget.x = 0;
       camLookTarget.y = 0;
       camLookTarget.z = 0;
@@ -9841,7 +9917,11 @@
                 (camTransition.toRadius - camTransition.fromRadius) * eased;
     camAngle  = camTransition.fromAngle +
                 (camTransition.toAngle  - camTransition.fromAngle)  * eased;
-    if (t >= 1) camTransition = null;
+    if (t >= 1){
+      camTransition = null;
+      // Land the inertia targets on the final pose so the camera stays put
+      camAngleT = camAngle; camHeightT = camHeight; camRadiusT = camRadius;
+    }
   }
 
   // ============================================================
@@ -11215,6 +11295,13 @@
   // orbit vs FP mode.
   // ============================================================
   let _pedLastT = performance.now();
+  // Roll a van's tires/rims at road speed (radius stored by makeAmazonVan).
+  function spinWheels(van, speed, dt){
+    const u = van.userData;
+    if (!u.wheels) return;
+    const w = (speed / (u.wheelRadius || 0.42)) * dt;
+    for (let i = 0; i < u.wheels.length; i++) u.wheels[i].rotation.x += w;
+  }
   function updateVehicles(dt){
     for (let i = 0; i < VEHICLES.length; i++){
       const v = VEHICLES[i];
@@ -11298,20 +11385,38 @@
     d.phaseT += dt;
 
     if (d.phase === 'driving_in' || d.phase === 'driving_out'){
+      // Physical accel/decel: ramp up from rest when pulling away and
+      // brake smoothly on the final approach instead of stopping dead.
+      let targetSpeed = d.speed;
+      if (d.phase === 'driving_in'){
+        const park = d.path[d.parkIdx];
+        const pdx = park[0] - d.van.position.x;
+        const pdz = park[1] - d.van.position.z;
+        const parkDist = Math.hypot(pdx, pdz);
+        const ptsToPark = (d.parkIdx - d.segIdx + d.path.length) % d.path.length;
+        // Only brake on the actual approach (few path points away), not
+        // when the park spot merely happens to be near across the block.
+        if (ptsToPark <= 8 && parkDist < 10){
+          targetSpeed = Math.max(1.1, d.speed * (parkDist / 10));
+        }
+      }
+      const rate = (targetSpeed > d.curSpeed) ? 4.5 : 9.0;
+      d.curSpeed += Math.max(-rate * dt, Math.min(rate * dt, targetSpeed - d.curSpeed));
+
       const a = d.path[d.segIdx];
       const b = d.path[(d.segIdx + 1) % d.path.length];
       const segLen = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
-      d.segT += (d.speed * dt) / segLen;
+      d.segT += (d.curSpeed * dt) / segLen;
       while (d.segT >= 1){
         d.segT -= 1;
         d.segIdx = (d.segIdx + 1) % d.path.length;
-        // Reached the parking waypoint while approaching: come to a stop.
+        // Reached the parking waypoint while approaching: glide the last
+        // stretch to the curb pose instead of teleporting there.
         if (d.phase === 'driving_in' && d.segIdx === d.parkIdx){
           const p = d.path[d.parkIdx];
-          d.van.position.set(p[0], d.groundY + 0.05, p[1]);
-          d.van.rotation.y = Math.PI / 2;       // square at the curb, nose east
-          d.currentYaw = Math.PI / 2;
-          d.phase = 'parking_pause';
+          d.parkFrom = { x: d.van.position.x, z: d.van.position.z, yaw: d.currentYaw };
+          d.parkTo   = { x: p[0], z: p[1], yaw: Math.PI / 2 };  // square at the curb, nose east
+          d.phase = 'parking_ease';
           d.phaseT = 0;
           d.segT = 0;
           return;
@@ -11332,6 +11437,25 @@
         delta = Math.atan2(Math.sin(delta), Math.cos(delta));
         d.currentYaw += delta * Math.min(1, dt * 8);
         d.van.rotation.y = d.currentYaw;
+      }
+      spinWheels(d.van, d.curSpeed, dt);
+    }
+    else if (d.phase === 'parking_ease'){
+      // ~0.45s ease-out glide from wherever braking ended to the exact
+      // curb pose; wheels roll down to a stop with it.
+      const t = Math.min(1, d.phaseT / 0.45);
+      const e = 1 - Math.pow(1 - t, 3);
+      d.van.position.x = d.parkFrom.x + (d.parkTo.x - d.parkFrom.x) * e;
+      d.van.position.z = d.parkFrom.z + (d.parkTo.z - d.parkFrom.z) * e;
+      let dy = d.parkTo.yaw - d.parkFrom.yaw;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      d.currentYaw = d.parkFrom.yaw + dy * e;
+      d.van.rotation.y = d.currentYaw;
+      spinWheels(d.van, d.curSpeed * (1 - e), dt);
+      if (t >= 1){
+        d.curSpeed = 0;
+        d.phase = 'parking_pause';
+        d.phaseT = 0;
       }
     }
     else if (d.phase === 'parking_pause'){
@@ -11389,21 +11513,26 @@
       if (d.phaseT >= 0.5){
         d.segIdx = d.parkIdx;
         d.segT   = 0;
+        d.curSpeed = 0;   // accelerate away from rest
         d.phase  = 'driving_out';
         d.phaseT = 0;
       }
     }
 
-    // Gait + body bob whenever the driver is on screen
+    // Gait + body bob, enveloped: limbs swing while actually walking and
+    // ease to a standing rest while the driver pauses to place the parcel.
     if (d.driver.visible){
-      const t = performance.now() * 0.001;
-      const swing = Math.sin(t * 7) * 0.55;
+      const walking = (d.phase === 'walking_in' || d.phase === 'walking_out');
+      const ampTarget = walking ? 1 : 0;
+      d.gaitAmp += Math.max(-6 * dt, Math.min(6 * dt, ampTarget - d.gaitAmp));
+      if (d.gaitAmp > 0.01) d.walkPhase += dt * 7;
+      const swing = Math.sin(d.walkPhase) * 0.55 * d.gaitAmp;
       const u = d.driver.userData;
       if (u.legL) u.legL.rotation.x =  swing - 0.05;
       if (u.legR) u.legR.rotation.x = -swing - 0.05;
       if (u.armL) u.armL.rotation.x = -swing * 0.7 - 0.1;
       if (u.armR) u.armR.rotation.x =  swing * 0.7 - 0.1;
-      d.driver.position.y = d.groundY + 0.05 + Math.abs(Math.sin(t * 7)) * 0.04;
+      d.driver.position.y = d.groundY + 0.05 + Math.abs(Math.sin(d.walkPhase)) * 0.04 * d.gaitAmp;
     }
   }
 
@@ -11468,7 +11597,13 @@
   //   - building tick (conveyor, packages, robots, elevator)
   //   - pedestrian + vehicle stepping on the surrounding block
   // ============================================================
-  let elevFrameCount = 0;
+  // The building simulation was tuned with per-frame constants at 60Hz.
+  // A fixed-timestep accumulator preserves that exact behavior while
+  // decoupling it from the display refresh rate (no more double-speed
+  // conveyor on 120Hz screens, no slow-motion when frames drop).
+  const SIM_DT = 1 / 60;
+  let _simAcc = 0;
+  let simStepCount = 0;
   let _lastFrameMs = performance.now();
   function loop(){
     requestAnimationFrame(loop);
@@ -11486,10 +11621,23 @@
         if (camAnim){
           advanceCamAnim(dt);
         } else if (document.getElementById('chk-auto').checked){
-          camAngle += 0.003;
+          camAngleT += 0.18 * dt;
         }
         // Cam transition (go underground / surface) on top of orbit
         if (typeof updateCamTransition === 'function') updateCamTransition();
+        // Camera inertia: user input steers targets; the camera itself
+        // glides after them. Scripted moves (room framing, underground
+        // transition, FP zoom) write the actuals directly, so while one
+        // is active the targets just track it.
+        if (camAnim || _zoomTransitioning || camTransition){
+          camAngleT = camAngle; camHeightT = camHeight; camRadiusT = camRadius;
+        } else {
+          const k  = 1 - Math.exp(-12 * dt);
+          const kr = 1 - Math.exp(-9 * dt);
+          camAngle  += (camAngleT  - camAngle)  * k;
+          camHeight += (camHeightT - camHeight) * k;
+          camRadius += (camRadiusT - camRadius) * kr;
+        }
         updateCam();
       }
     }
@@ -11497,13 +11645,22 @@
     // Blueprint mode swap (below-ground -> wireframe world)
     if (window.__BLUEPRINT_UPDATE__) window.__BLUEPRINT_UPDATE__();
 
-    // Pedestrians + vehicles on the NYC block
+    // Pedestrians + vehicles on the NYC block (already dt-based)
     if (typeof updatePedestrians === 'function') updatePedestrians();
 
-    // Central building tick (conveyor, packages, robots, elevator, fades)
-    tick();
-    elevFrameCount++;
-    updateElevator(elevFrameCount);
+    // Central building tick at a fixed 60Hz step, catching up when the
+    // display runs slower and stepping once per two frames at 120Hz.
+    _simAcc += dt;
+    let steps = 0;
+    while (_simAcc >= SIM_DT && steps < 3){
+      tick();
+      simStepCount++;
+      updateElevator(simStepCount);
+      _simAcc -= SIM_DT;
+      steps++;
+    }
+    if (steps === 3) _simAcc = 0;   // drop backlog after a long stall
+
     updateFadesAndDoors();
 
     renderer.render(scene, camera);
