@@ -91,6 +91,105 @@
                 inset 0 0 120px rgba(20,15,8,0.35);
   }
 
+  /* ---------- Landing ----------
+     While <body class="landing">, the page chrome disappears and the
+     stage goes full-bleed behind a fixed overlay: the live scene is the
+     hero image, slowly orbiting, with copy over a light scrim on the
+     left. Entering removes the class, restoring the framed layout. */
+  body.landing { padding: 0; }
+  body.landing #topbar { display: none; }
+  body.landing #stage {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  body.landing #status,
+  body.landing #counter,
+  body.landing #legend,
+  body.landing #orbit-hint { display: none; }
+
+  #landing {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: flex-start;
+    padding: clamp(24px, 6vw, 72px);
+    background:
+      linear-gradient(76deg,
+        rgba(244,240,229,0.97) 0%,
+        rgba(244,240,229,0.92) 36%,
+        rgba(244,240,229,0.45) 64%,
+        rgba(244,240,229,0) 85%),
+      linear-gradient(0deg, rgba(31,30,26,0.10), rgba(31,30,26,0) 35%);
+  }
+  #landing.leaving {
+    opacity: 0;
+    transition: opacity 0.45s ease-out;
+    pointer-events: none;
+  }
+  #landing .intro { width: min(34rem, 100%); }
+  #landing h1 {
+    margin: 0 0 0.9rem;
+    font-size: clamp(2.3rem, 5.5vw, 4.2rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.04;
+    color: #1f1e1a;
+    text-wrap: balance;
+  }
+  #landing .lede {
+    margin: 0 0 1.1rem;
+    font-size: clamp(0.98rem, 1.6vw, 1.09rem);
+    line-height: 1.6;
+    color: #3a382f;
+    max-width: 60ch;
+    text-wrap: pretty;
+  }
+  #landing .facts {
+    margin: 0 0 1.7rem;
+    font-size: 0.8rem;
+    color: #55503f;
+  }
+  #landing .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  #landing #btn-enter {
+    font-size: 0.9rem;
+    font-weight: 600;
+    padding: 12px 24px;
+    border-radius: 10px;
+    border: 0;
+    background: #1f1e1a;
+    color: #f4f0e5;
+    box-shadow: 0 10px 28px -10px rgba(30,22,12,0.55);
+  }
+  #landing #btn-enter:hover {
+    background: #33312a;
+    transform: translateY(-1px);
+    box-shadow: 0 14px 32px -10px rgba(30,22,12,0.6);
+  }
+  #landing #btn-enter:active { transform: translateY(0) scale(0.98); }
+  #landing #btn-enter:focus-visible {
+    outline: 2px solid #1f1e1a;
+    outline-offset: 3px;
+  }
+  #landing .enter-hint { font-size: 0.78rem; color: #55503f; }
+
+  @keyframes landing-rise {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: none; }
+  }
+  #landing h1          { animation: landing-rise 0.7s cubic-bezier(0.22,1,0.36,1) 0.10s backwards; }
+  #landing .lede       { animation: landing-rise 0.7s cubic-bezier(0.22,1,0.36,1) 0.22s backwards; }
+  #landing .facts      { animation: landing-rise 0.7s cubic-bezier(0.22,1,0.36,1) 0.32s backwards; }
+  #landing .actions    { animation: landing-rise 0.7s cubic-bezier(0.22,1,0.36,1) 0.42s backwards; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #landing h1, #landing .lede, #landing .facts, #landing .actions { animation: none; }
+    #landing.leaving { transition: none; }
+  }
+
   /* Fullscreen mode. We pass <body> to requestFullscreen() so the
      :fullscreen pseudo-class fires here. Top bar stays compact at the
      top; stage flexes to fill the remainder, which gives the user
@@ -107,7 +206,19 @@
   }
 </style>
 </head>
-<body>
+<body class="landing">
+
+<section id="landing" aria-label="Introduction">
+  <div class="intro">
+    <h1>The last mile, underground.</h1>
+    <p class="lede">A working model of one New York block where packages leave the fulfillment center, travel through underground tubes, and arrive inside the apartment &mdash; while the delivery van upstairs is still circling for parking.</p>
+    <p class="facts">6 fulfillment centers &middot; 40 apartments &middot; live simulation, rendered in your browser</p>
+    <div class="actions">
+      <button id="btn-enter">Enter the model</button>
+      <span class="enter-hint">Drag to orbit, walk the floors, ride the tubes.</span>
+    </div>
+  </div>
+</section>
 
 <h2 style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;">Combined interactive 3D model: NYC city block with central apartment, conveyor delivery system, underground tunnel network to 6 fulfillment centers, subway lines, and architectural views.</h2>
 
@@ -6993,6 +7104,53 @@
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onFullscreenChange);
 
+  // ---------- Landing ----------
+  // On first load the page opens on a full-bleed establishing shot: the
+  // camera parks wide and high and drifts slowly while the overlay copy
+  // sits over it. "Enter the model" drops the overlay, restores the
+  // framed layout, and lets the camera-inertia glide into the default
+  // working pose.
+  const landingEl = document.getElementById('landing');
+  const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let landingActive = !!landingEl && document.body.classList.contains('landing');
+  const LANDING_ANGLE = -Math.PI / 2 - 0.4;
+  let landingT = 0;
+  if (landingActive){
+    // Aerial establishing shot: same heading as the default pose (the
+    // -z side, outside BLOCK_BOUNDS, so the later descent never clips a
+    // building) but lifted above every rooftop so the whole block reads
+    // as a diorama behind the overlay copy.
+    camRadius = camRadiusT = 66;
+    camHeight = camHeightT = 58;
+    camAngle  = camAngleT  = LANDING_ANGLE;
+    updateCam();
+    const enterBtn = document.getElementById('btn-enter');
+    function enterScene(){
+      if (!landingActive) return;
+      landingActive = false;
+      landingEl.classList.add('leaving');
+      document.body.classList.remove('landing');
+      (window.__LANDING_RESTORE__ || []).forEach(function(fn){ fn(); });
+      // Layout just changed; let it settle, then resize the renderer.
+      requestAnimationFrame(function(){ requestAnimationFrame(resizeRenderer); });
+      // Glide to the default startup orbit pose (see camRadius init).
+      camRadiusT = 50; camHeightT = 6; camAngleT = -Math.PI / 2 - 0.4;
+      if (REDUCED_MOTION){
+        camRadius = camRadiusT; camHeight = camHeightT; camAngle = camAngleT;
+        updateCam();
+      }
+      setTimeout(function(){ landingEl.remove(); }, 500);
+    }
+    enterBtn.addEventListener('click', enterScene);
+    // Enter key enters the model without needing focus; Tab still lands
+    // on the button first (it is the first focusable element).
+    document.addEventListener('keydown', function(e){
+      if (landingActive && e.key === 'Enter') enterScene();
+    });
+  } else if (landingEl){
+    landingEl.remove();
+  }
+
   updateCounter();
 
   // ---------- First-person walk mode ----------
@@ -10480,6 +10638,13 @@
     const groundLabel = makeGroundLabel('GROUND LEVEL');
     groundLabel.position.set(GR_HALF_X - 6, groundY + 1.6, -GR_HALF_Z + 0.3);
     UNDERGROUND.add(groundLabel);
+    // depthTest=false makes this sprite draw through the landing scrim
+    // and collide with the overlay copy; hide it until the user enters.
+    if (landingActive){
+      groundLabel.visible = false;
+      (window.__LANDING_RESTORE__ = window.__LANDING_RESTORE__ || [])
+        .push(function(){ groundLabel.visible = true; });
+    }
 
     // ============================================================
     // UNDERGROUND ENCLOSURE
@@ -11620,6 +11785,15 @@
         // Frame-room animation overrides auto-rotate while running
         if (camAnim){
           advanceCamAnim(dt);
+        } else if (landingActive){
+          // Establishing-shot sway behind the landing overlay: a slow
+          // ±0.1 rad oscillation around the known-clear heading, so the
+          // scene feels alive but the camera never wanders into the
+          // perimeter buildings the way a one-way drift does.
+          if (!REDUCED_MOTION){
+            landingT += dt;
+            camAngleT = LANDING_ANGLE + Math.sin(landingT * 0.12) * 0.1;
+          }
         } else if (document.getElementById('chk-auto').checked){
           camAngleT += 0.18 * dt;
         }
