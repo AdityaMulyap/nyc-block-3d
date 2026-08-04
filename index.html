@@ -480,9 +480,27 @@
       const street   = opts.street !== false;
       const pal      = palettes[style] || palettes.redBrick;
 
+      const maps = !!opts.maps;
+
       const c = document.createElement('canvas');
       c.width = width; c.height = height;
       const g = c.getContext('2d');
+
+      // Optional bump (height) + roughness companion canvases, drawn in
+      // lockstep with the color canvas so features stay aligned. Bump:
+      // mid-gray = wall plane, bright = raised (frames, sills), dark =
+      // recessed (mortar, glass). Roughness: bright = matte, dark = glossy.
+      let bg = null, rg = null, bumpC = null, roughC = null;
+      if (maps){
+        bumpC = document.createElement('canvas');
+        bumpC.width = width; bumpC.height = height;
+        bg = bumpC.getContext('2d');
+        roughC = document.createElement('canvas');
+        roughC.width = width; roughC.height = height;
+        rg = roughC.getContext('2d');
+        bg.fillStyle = '#808080'; bg.fillRect(0, 0, width, height);
+        rg.fillStyle = '#d9d9d9'; rg.fillRect(0, 0, width, height);
+      }
 
       // Base wall
       g.fillStyle = pal.wall;
@@ -496,29 +514,56 @@
         const wallR = parseInt(pal.wall.slice(1,3), 16);
         const wallG = parseInt(pal.wall.slice(3,5), 16);
         const wallB = parseInt(pal.wall.slice(5,7), 16);
+        // Mortar bed behind everything so both head and bed joints show
+        g.fillStyle = pal.mortar;
+        g.fillRect(0, 0, width, height);
+        if (maps){ bg.fillStyle = '#464646'; bg.fillRect(0, 0, width, height); }
         for (let row = 0; row * brickH < height + brickH; row++){
           const offsetX = (row % 2) ? brickW * 0.5 : 0;
           for (let x = -brickW; x < width + brickW; x += brickW){
-            const v = (Math.random() - 0.5) * 26;
-            const rr = Math.max(0, Math.min(255, wallR + v));
-            const gg = Math.max(0, Math.min(255, wallG + v));
-            const bb = Math.max(0, Math.min(255, wallB + v));
+            const v = (Math.random() - 0.5) * 30;
+            const hue = (Math.random() - 0.5) * 16;    // warm/cool drift per brick
+            let rr = wallR + v + hue;
+            let gg = wallG + v;
+            let bb = wallB + v - hue * 0.6;
+            if (Math.random() < 0.055){                 // occasional burnt clinker
+              rr *= 0.5; gg *= 0.46; bb *= 0.46;
+            } else if (Math.random() < 0.04){           // occasional pale brick
+              rr = rr * 0.6 + 110; gg = gg * 0.6 + 100; bb = bb * 0.6 + 88;
+            }
+            rr = Math.max(0, Math.min(255, rr));
+            gg = Math.max(0, Math.min(255, gg));
+            bb = Math.max(0, Math.min(255, bb));
             g.fillStyle = 'rgb(' + (rr|0) + ',' + (gg|0) + ',' + (bb|0) + ')';
-            g.fillRect(x + offsetX, row * brickH, brickW - 1, brickH - 1);
+            g.fillRect(x + offsetX + 0.6, row * brickH + 0.6, brickW - 1.8, brickH - 1.6);
+            if (maps){
+              const bv = 140 + Math.random() * 70;      // uneven brick faces
+              bg.fillStyle = 'rgb(' + (bv|0) + ',' + (bv|0) + ',' + (bv|0) + ')';
+              bg.fillRect(x + offsetX + 0.6, row * brickH + 0.6, brickW - 1.8, brickH - 1.6);
+            }
           }
-          g.fillStyle = pal.mortar;
-          g.fillRect(0, row * brickH + brickH - 1, width, 1);
         }
       } else if (style === 'brownstone'){
         // Horizontal stone banding
         for (let y = 0; y < height; y += 18 + Math.random() * 10){
           g.fillStyle = 'rgba(0,0,0,' + (0.05 + Math.random() * 0.05) + ')';
           g.fillRect(0, y, width, 1.5);
+          if (maps){
+            bg.fillStyle = 'rgba(40,40,40,0.55)';       // scored joints recede
+            bg.fillRect(0, y, width, 1.5);
+          }
         }
         for (let i = 0; i < 2400; i++){
           const dark = Math.random() < 0.5;
           g.fillStyle = (dark ? 'rgba(40,28,16,' : 'rgba(220,200,170,') + (Math.random() * 0.08) + ')';
           g.fillRect(Math.random() * width, Math.random() * height, 1, 1);
+        }
+        if (maps){
+          for (let i = 0; i < 1600; i++){               // pitted stone surface
+            const bv = 100 + Math.random() * 110;
+            bg.fillStyle = 'rgba(' + (bv|0) + ',' + (bv|0) + ',' + (bv|0) + ',0.35)';
+            bg.fillRect(Math.random() * width, Math.random() * height, 1.5, 1.5);
+          }
         }
       } else if (style === 'glass'){
         const grd = g.createLinearGradient(0, 0, 0, height);
@@ -527,6 +572,9 @@
         grd.addColorStop(1.00, '#0e1622');
         g.fillStyle = grd;
         g.fillRect(0, 0, width, height);
+        if (maps){                                       // whole face is sleek glass
+          rg.fillStyle = '#404040'; rg.fillRect(0, 0, width, height);
+        }
       }
 
       // Window grid (street level handled separately as the last row)
@@ -541,6 +589,9 @@
           // Stone base band
           g.fillStyle = pal.dark;
           g.fillRect(0, row * rowH, width, rowH);
+          if (maps){
+            bg.fillStyle = '#707070'; bg.fillRect(0, row * rowH, width, rowH);
+          }
           // Doors / shopfronts
           const doorBays = Math.max(2, Math.floor(bays / 2));
           for (let i = 0; i < doorBays; i++){
@@ -556,6 +607,12 @@
             // trim
             g.fillStyle = pal.trim;
             g.fillRect(dxc - dw / 2 - 2, dy - 4, dw + 4, 4);
+            if (maps){
+              bg.fillStyle = '#3a3a3a';                 // doorway recess
+              bg.fillRect(dxc - dw / 2, dy, dw, dh);
+              rg.fillStyle = '#383838';                 // shopfront glass gloss
+              rg.fillRect(dxc - dw / 2 + 4, dy + 4, dw - 8, dh * 0.55);
+            }
           }
           // Curb shadow
           g.fillStyle = 'rgba(0,0,0,0.35)';
@@ -592,17 +649,101 @@
               g.fillStyle = '#1a1612';
             }
             g.fillRect(x, yTop, winW, winH);
+            // Soft sky reflection sweeping across the glass
+            if (!isLit){
+              const refl = g.createLinearGradient(x, yTop, x + winW * 0.5, yTop + winH);
+              refl.addColorStop(0.00, 'rgba(150,180,215,0.18)');
+              refl.addColorStop(0.45, 'rgba(150,180,215,0.04)');
+              refl.addColorStop(1.00, 'rgba(150,180,215,0)');
+              g.fillStyle = refl;
+              g.fillRect(x, yTop, winW, winH);
+              // Some tenants leave blinds partially drawn
+              if (Math.random() < 0.3){
+                const shadeH = winH * (0.25 + Math.random() * 0.45);
+                g.fillStyle = (Math.random() < 0.5)
+                  ? 'rgba(198,186,160,0.92)' : 'rgba(120,108,94,0.9)';
+                g.fillRect(x + 1, yTop + 1, winW - 2, shadeH);
+                g.fillStyle = 'rgba(0,0,0,0.28)';
+                g.fillRect(x + 1, yTop + shadeH - 1, winW - 2, 1.5);
+              }
+            }
             // Mullions
             g.fillStyle = pal.trim;
             g.fillRect(x + winW / 2 - 0.5, yTop, 1, winH);
             g.fillRect(x, yTop + winH / 2 - 0.5, winW, 1);
+            // Grime streaks bleeding down from the sill
+            if (Math.random() < 0.55){
+              const nStreak = 1 + (Math.random() * 2 | 0);
+              for (let s = 0; s < nStreak; s++){
+                const sx = x + Math.random() * winW;
+                const sl = rowH * (0.25 + Math.random() * 0.45);
+                const sGrad = g.createLinearGradient(0, yTop + winH + 4, 0, yTop + winH + 4 + sl);
+                sGrad.addColorStop(0, 'rgba(18,12,7,0.20)');
+                sGrad.addColorStop(1, 'rgba(18,12,7,0)');
+                g.fillStyle = sGrad;
+                g.fillRect(sx, yTop + winH + 4, 1.5 + Math.random() * 2, sl);
+              }
+            }
+            if (maps){
+              bg.fillStyle = '#b8b8b8';                 // frame proud of the wall
+              bg.fillRect(x - 3, yTop - 3, winW + 6, winH + 6);
+              rg.fillStyle = '#8c8c8c';
+              rg.fillRect(x - 3, yTop - 3, winW + 6, winH + 6);
+              bg.fillStyle = '#c9c9c9';                 // sill sticks out most
+              bg.fillRect(x - 7, yTop + winH, winW + 14, 4);
+              bg.fillStyle = '#454545';                 // glass sits deep...
+              bg.fillRect(x, yTop, winW, winH);
+              rg.fillStyle = '#2e2e2e';                 // ...and glossy
+              rg.fillRect(x, yTop, winW, winH);
+            }
           }
         }
       }
 
+      // ---- Weathering over everything: rain streaks, edge AO, base grime ----
+      for (let i = 0; i < width / 6; i++){
+        const sx = Math.random() * width;
+        const sy = Math.random() * height * 0.7;
+        const sl = height * (0.05 + Math.random() * 0.2);
+        const streak = g.createLinearGradient(0, sy, 0, sy + sl);
+        streak.addColorStop(0, (Math.random() < 0.7)
+          ? 'rgba(15,10,6,0.055)' : 'rgba(235,228,210,0.045)');
+        streak.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = streak;
+        g.fillRect(sx, sy, 1 + Math.random() * 2, sl);
+      }
+      const aoTop = g.createLinearGradient(0, 0, 0, height * 0.05);
+      aoTop.addColorStop(0, 'rgba(0,0,0,0.25)');
+      aoTop.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = aoTop;
+      g.fillRect(0, 0, width, height * 0.05);
+      const edgeW = width * 0.05;
+      const aoL = g.createLinearGradient(0, 0, edgeW, 0);
+      aoL.addColorStop(0, 'rgba(0,0,0,0.16)');
+      aoL.addColorStop(1, 'rgba(0,0,0,0)');
+      g.fillStyle = aoL;
+      g.fillRect(0, 0, edgeW, height);
+      const aoR = g.createLinearGradient(width - edgeW, 0, width, 0);
+      aoR.addColorStop(0, 'rgba(0,0,0,0)');
+      aoR.addColorStop(1, 'rgba(0,0,0,0.16)');
+      g.fillStyle = aoR;
+      g.fillRect(width - edgeW, 0, edgeW, height);
+      const grime = g.createLinearGradient(0, height * 0.94, 0, height);
+      grime.addColorStop(0, 'rgba(0,0,0,0)');
+      grime.addColorStop(1, 'rgba(12,8,5,0.30)');
+      g.fillStyle = grime;
+      g.fillRect(0, height * 0.94, width, height * 0.06);
+
       const tex = new THREE.CanvasTexture(c);
       tex.encoding = THREE.sRGBEncoding;
-      tex.anisotropy = 4;
+      tex.anisotropy = 8;
+      if (maps){
+        const bump = new THREE.CanvasTexture(bumpC);
+        bump.anisotropy = 4;
+        const rough = new THREE.CanvasTexture(roughC);
+        rough.anisotropy = 4;
+        tex.userData = { bump: bump, rough: rough };
+      }
       return tex;
     }
 
@@ -723,18 +864,28 @@
       const aspectFB = h / w;
       const aspectLR = h / d;
 
-      const texFB = makeFacade({ style, floors, bays, width:512, height: Math.round(512 * aspectFB) });
-      const texLR = makeFacade({ style, floors, bays:sideBays, width:512, height: Math.round(512 * aspectLR) });
+      // Near "hero" lots get higher-res textures plus bump/roughness maps;
+      // far rings stay cheap color-only.
+      const texRes = cfg.detail ? 768 : 512;
+      const texFB = makeFacade({ style, floors, bays, width:texRes, height: Math.round(texRes * aspectFB), maps: !!cfg.detail });
+      const texLR = makeFacade({ style, floors, bays:sideBays, width:texRes, height: Math.round(texRes * aspectLR), maps: !!cfg.detail });
 
       function wallMat(tex){
+        const ud = tex.userData || {};
         if (style === 'glass'){
-          return new THREE.MeshStandardMaterial({
+          const m = new THREE.MeshStandardMaterial({
             map:tex, color:0x7585a0, roughness:0.18, metalness:0.78
           });
+          if (ud.rough){ m.roughnessMap = ud.rough; m.roughness = 1.0; }
+          if (ud.bump){ m.bumpMap = ud.bump; m.bumpScale = 0.12; }
+          return m;
         }
-        return new THREE.MeshStandardMaterial({
+        const m = new THREE.MeshStandardMaterial({
           map:tex, roughness:0.85, metalness:0.04
         });
+        if (ud.rough){ m.roughnessMap = ud.rough; m.roughness = 1.0; }
+        if (ud.bump){ m.bumpMap = ud.bump; m.bumpScale = 0.45; }
+        return m;
       }
       const matFB = wallMat(texFB);
       const matLR = wallMat(texLR);
@@ -1256,15 +1407,15 @@
       // a uniform low-rise neighbor backdrop, instead of being
       // overshadowed by taller mixed-height buildings.
       // Behind the central building (north / -Z side of the block)
-      { x:-19, z:-22, w:18, d:14, h:22, style:'redBrick',   floors:7,  bays:6, features:['water_tower','fire_escape_south','ac_units'] },
-      { x: 13, z:-22, w:16, d:13, h:19, style:'tanBrick',   floors:6,  bays:5, features:['hvac','ac_units','fire_escape_south'] },
+      { x:-19, z:-22, w:18, d:14, h:22, style:'redBrick',   floors:7,  bays:6, detail:true, features:['water_tower','fire_escape_south','ac_units'] },
+      { x: 13, z:-22, w:16, d:13, h:19, style:'tanBrick',   floors:6,  bays:5, detail:true, features:['hvac','ac_units','fire_escape_south'] },
       // East side (+X)
-      { x: 24, z:  0, w:13, d:14, h:19, style:'brownstone', floors:6,  bays:3, features:['stoop'] },
+      { x: 24, z:  0, w:13, d:14, h:19, style:'brownstone', floors:6,  bays:3, detail:true, features:['stoop'] },
       // Front (south / +Z side)
-      { x: 14, z: 24, w:16, d:14, h:26, style:'glass',      floors:8,  bays:6, features:['hvac','antenna'] },
-      { x:-15, z: 23, w:15, d:12, h:22, style:'redBrick',   floors:7,  bays:5, features:['fire_escape_north','ac_units'] },
+      { x: 14, z: 24, w:16, d:14, h:26, style:'glass',      floors:8,  bays:6, detail:true, features:['hvac','antenna'] },
+      { x:-15, z: 23, w:15, d:12, h:22, style:'redBrick',   floors:7,  bays:5, detail:true, features:['fire_escape_north','ac_units'] },
       // West side (-X)
-      { x:-26, z:  0, w:13, d:18, h:19, style:'darkBrick',  floors:6,  bays:6, features:['water_tower','fire_escape_east'] }
+      { x:-26, z:  0, w:13, d:18, h:19, style:'darkBrick',  floors:6,  bays:6, detail:true, features:['water_tower','fire_escape_east'] }
     ];
     lots.forEach(function(b){
       const m = makeBuilding(b);
@@ -9152,12 +9303,31 @@
         g.lineTo(256, y);
         g.stroke();
       }
+      // Matching bump tile: speckled height noise + recessed score lines
+      const bc = document.createElement('canvas');
+      bc.width = 256; bc.height = 256;
+      const bgT = bc.getContext('2d');
+      bgT.fillStyle = '#808080';
+      bgT.fillRect(0, 0, 256, 256);
+      for (let i = 0; i < 700; i++){
+        const bv = 100 + Math.random() * 110;
+        bgT.fillStyle = 'rgba(' + (bv|0) + ',' + (bv|0) + ',' + (bv|0) + ',0.4)';
+        bgT.fillRect(Math.random() * 256, Math.random() * 256, 1.5, 1.5);
+      }
+      bgT.fillStyle = 'rgba(50,50,50,0.6)';
+      for (let row = 1; row < 4; row++) bgT.fillRect(0, row * 64, 256, 1);
+
       const tex = new THREE.CanvasTexture(c);
       tex.encoding = THREE.sRGBEncoding;
       tex.wrapS = THREE.RepeatWrapping;
       tex.wrapT = THREE.RepeatWrapping;
       tex.repeat.set(faceW / 0.4, faceH / 0.4);
-      tex.anisotropy = 4;
+      tex.anisotropy = 8;
+      const bump = new THREE.CanvasTexture(bc);
+      bump.wrapS = THREE.RepeatWrapping;
+      bump.wrapT = THREE.RepeatWrapping;
+      bump.repeat.set(faceW / 0.4, faceH / 0.4);
+      tex.userData = { bump: bump };
       return tex;
     }
 
@@ -9174,12 +9344,30 @@
       c.width = cw; c.height = ch;
       const g = c.getContext('2d');
 
+      // Companion bump + roughness canvases, drawn in lockstep so
+      // features stay aligned with the color map.
+      const bumpC = document.createElement('canvas');
+      bumpC.width = cw; bumpC.height = ch;
+      const bg = bumpC.getContext('2d');
+      const roughC = document.createElement('canvas');
+      roughC.width = cw; roughC.height = ch;
+      const rg = roughC.getContext('2d');
+      bg.fillStyle = '#808080'; bg.fillRect(0, 0, cw, ch);
+      rg.fillStyle = '#d2d2d2'; rg.fillRect(0, 0, cw, ch);
+
       // Base: travertine cream
       const baseGrad = g.createLinearGradient(0, 0, 0, ch);
       baseGrad.addColorStop(0, '#e8e2d4');
       baseGrad.addColorStop(1, '#d8d0bc');
       g.fillStyle = baseGrad;
       g.fillRect(0, 0, cw, ch);
+
+      // Height noise on the stone so light plays across it
+      for (let i = 0; i < Math.floor(cw * ch * 0.0015); i++){
+        const bv = 105 + Math.random() * 100;
+        bg.fillStyle = 'rgba(' + (bv|0) + ',' + (bv|0) + ',' + (bv|0) + ',0.35)';
+        bg.fillRect(Math.random() * cw, Math.random() * ch, 2, 2);
+      }
 
       // Travertine micro-speckle
       const speckCount = Math.floor(cw * ch * 0.005);
@@ -9202,6 +9390,31 @@
         g.moveTo(0, y);
         g.lineTo(cw, y);
         g.stroke();
+        bg.fillStyle = 'rgba(60,60,60,0.5)';
+        bg.fillRect(0, y, cw, 1);
+      }
+
+      // Vertical panel joints, staggered per course, with a faint
+      // per-panel tone shift so the cladding reads as individual
+      // travertine slabs instead of one continuous pour.
+      const panelW = cw / 7;
+      let course = 0;
+      for (let y = 0; y < ch; y += scoreH * 2){
+        const off = (course % 2) ? panelW * 0.5 : 0;
+        for (let px = -panelW; px < cw + panelW; px += panelW){
+          const tint = Math.random();
+          if (tint < 0.5){
+            g.fillStyle = (tint < 0.25)
+              ? 'rgba(150,138,112,' + (0.03 + Math.random() * 0.04) + ')'
+              : 'rgba(255,250,238,' + (0.03 + Math.random() * 0.04) + ')';
+            g.fillRect(px + off, y, panelW, scoreH * 2);
+          }
+          g.fillStyle = 'rgba(120,110,90,0.16)';
+          g.fillRect(px + off, y, 1, scoreH * 2);
+          bg.fillStyle = 'rgba(70,70,70,0.45)';
+          bg.fillRect(px + off, y, 1, scoreH * 2);
+        }
+        course++;
       }
 
       const floorH = ch / FLOORS;
@@ -9229,6 +9442,11 @@
           gradGlass.addColorStop(1, '#1a2532');
           g.fillStyle = gradGlass;
           g.fillRect(z2x0, wallY0, z2x1 - z2x0, wallH);
+          // Curtain glass: recessed and glossy
+          bg.fillStyle = '#505050';
+          bg.fillRect(z2x0, wallY0, z2x1 - z2x0, wallH);
+          rg.fillStyle = '#2e2e2e';
+          rg.fillRect(z2x0, wallY0, z2x1 - z2x0, wallH);
           // Soft sky reflection at the top half of the glass
           const reflGrad = g.createLinearGradient(z2x0, wallY0, z2x0, wallY1);
           reflGrad.addColorStop(0, 'rgba(190,210,225,0.20)');
@@ -9238,12 +9456,18 @@
           // Vertical mullions (5 bays of glass)
           const mullionN = 5;
           g.fillStyle = '#f4f0e0';
+          bg.fillStyle = '#b4b4b4';
+          rg.fillStyle = '#909090';
           for (let m = 0; m <= mullionN; m++){
             const mx = z2x0 + (m / mullionN) * (z2x1 - z2x0);
             g.fillRect(mx - 2, wallY0, 4, wallH);
+            bg.fillRect(mx - 2, wallY0, 4, wallH);
+            rg.fillRect(mx - 2, wallY0, 4, wallH);
           }
           // Horizontal mid-mullion
           g.fillRect(z2x0, wallY0 + wallH / 2 - 1, z2x1 - z2x0, 2);
+          bg.fillRect(z2x0, wallY0 + wallH / 2 - 1, z2x1 - z2x0, 2);
+          rg.fillRect(z2x0, wallY0 + wallH / 2 - 1, z2x1 - z2x0, 2);
           // Random lit window
           if (Math.random() < 0.45){
             const litCol = Math.floor(Math.random() * mullionN);
@@ -9269,11 +9493,18 @@
           g.fillStyle = 'rgb(' + (r|0) + ',' + (gn|0) + ',' + (b|0) + ')';
           g.fillRect(sx, 0, woodPanelW * 0.97, ch);
         }
+        // Wood zone: warmer sheen than stone, grooved between planks
+        bg.fillStyle = '#8e8e8e';
+        bg.fillRect(z3x0, 0, cw - z3x0, ch);
+        rg.fillStyle = '#a8a8a8';
+        rg.fillRect(z3x0, 0, cw - z3x0, ch);
         // Plank shadow lines between wood panels
         g.fillStyle = 'rgba(28,14,5,0.55)';
+        bg.fillStyle = '#4a4a4a';
         for (let s = 1; s < woodPanelN; s++){
           const sx = z3x0 + s * woodPanelW - 0.5;
           g.fillRect(sx, 0, 1, ch);
+          bg.fillRect(sx - 0.5, 0, 2, ch);
         }
         // Wood grain noise (long horizontal streaks)
         for (let s = 0; s < woodPanelN; s++){
@@ -9307,6 +9538,10 @@
             // Frame surround
             g.fillStyle = '#f4f0e0';
             g.fillRect(wx - 4, winY - 4, winW + 8, winH + 8);
+            bg.fillStyle = '#b4b4b4';
+            bg.fillRect(wx - 4, winY - 4, winW + 8, winH + 8);
+            rg.fillStyle = '#909090';
+            rg.fillRect(wx - 4, winY - 4, winW + 8, winH + 8);
             // Glass
             const winGrad = g.createLinearGradient(wx, winY, wx, winY + winH);
             const isLit = Math.random() < 0.18;
@@ -9319,6 +9554,10 @@
             }
             g.fillStyle = winGrad;
             g.fillRect(wx, winY, winW, winH);
+            bg.fillStyle = '#484848';
+            bg.fillRect(wx, winY, winW, winH);
+            rg.fillStyle = '#2e2e2e';
+            rg.fillRect(wx, winY, winW, winH);
           }
         }
       } else {
@@ -9341,6 +9580,10 @@
             // Frame
             g.fillStyle = '#f4f0e0';
             g.fillRect(x - 5, winY - 5, winW + 10, winH + 10);
+            bg.fillStyle = '#b4b4b4';
+            bg.fillRect(x - 5, winY - 5, winW + 10, winH + 10);
+            rg.fillStyle = '#909090';
+            rg.fillRect(x - 5, winY - 5, winW + 10, winH + 10);
             // Dark glass
             const gradWin = g.createLinearGradient(x, winY, x, winY + winH);
             const isLit = Math.random() < 0.22;
@@ -9353,9 +9596,24 @@
             }
             g.fillStyle = gradWin;
             g.fillRect(x, winY, winW, winH);
+            bg.fillStyle = '#484848';
+            bg.fillRect(x, winY, winW, winH);
+            rg.fillStyle = '#2e2e2e';
+            rg.fillRect(x, winY, winW, winH);
+            // Sky reflection sweep on unlit glass
+            if (!isLit){
+              const refl = g.createLinearGradient(x, winY, x + winW * 0.5, winY + winH);
+              refl.addColorStop(0.00, 'rgba(170,195,220,0.16)');
+              refl.addColorStop(0.50, 'rgba(170,195,220,0.03)');
+              refl.addColorStop(1.00, 'rgba(170,195,220,0)');
+              g.fillStyle = refl;
+              g.fillRect(x, winY, winW, winH);
+            }
             // Vertical center mullion
             g.fillStyle = '#f4f0e0';
             g.fillRect(x + winW / 2 - 1, winY, 2, winH);
+            bg.fillStyle = '#a8a8a8';
+            bg.fillRect(x + winW / 2 - 1, winY, 2, winH);
           }
         }
       }
@@ -9372,6 +9630,11 @@
         slabGrad.addColorStop(1, '#e6dec6');
         g.fillStyle = slabGrad;
         g.fillRect(0, slabBandTop, cw, slabBandH);
+        // Slabs cantilever proud of the wall plane
+        bg.fillStyle = '#e2e2e2';
+        bg.fillRect(0, slabBandTop, cw, slabBandH);
+        rg.fillStyle = '#c8c8c8';
+        rg.fillRect(0, slabBandTop, cw, slabBandH);
         // Drop shadow below
         const shadowGrad = g.createLinearGradient(
           0, slabBandTop + slabBandH,
@@ -9381,18 +9644,37 @@
         shadowGrad.addColorStop(1, 'rgba(0,0,0,0)');
         g.fillStyle = shadowGrad;
         g.fillRect(0, slabBandTop + slabBandH, cw, floorH * 0.05);
+        // Rain-wash streaks trailing off the slab edge
+        for (let s = 0; s < 6; s++){
+          const sx = Math.random() * cw;
+          const sl = floorH * (0.15 + Math.random() * 0.3);
+          const st = g.createLinearGradient(0, slabBandTop + slabBandH, 0, slabBandTop + slabBandH + sl);
+          st.addColorStop(0, 'rgba(90,80,62,0.10)');
+          st.addColorStop(1, 'rgba(90,80,62,0)');
+          g.fillStyle = st;
+          g.fillRect(sx, slabBandTop + slabBandH, 1.5 + Math.random() * 2.5, sl);
+        }
       }
 
       const tex = new THREE.CanvasTexture(c);
       tex.encoding = THREE.sRGBEncoding;
-      tex.anisotropy = 4;
+      tex.anisotropy = 8;
+      const bump = new THREE.CanvasTexture(bumpC);
+      bump.anisotropy = 4;
+      const rough = new THREE.CanvasTexture(roughC);
+      rough.anisotropy = 4;
+      tex.userData = { bump: bump, rough: rough };
       return tex;
     }
 
     function addSkinFace(w, h, posX, posY, posZ, rotY, faceType){
+      const skinTex = makeBrickSkin(w, h, faceType);
+      const ud = skinTex.userData || {};
       const mat = new THREE.MeshStandardMaterial({
-        map: makeBrickSkin(w, h, faceType), roughness:0.78, side: THREE.DoubleSide
+        map: skinTex, roughness:0.78, side: THREE.DoubleSide
       });
+      if (ud.bump){ mat.bumpMap = ud.bump; mat.bumpScale = 0.3; }
+      if (ud.rough){ mat.roughnessMap = ud.rough; mat.roughness = 1.0; }
       const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
       mesh.position.set(posX, posY, posZ);
       mesh.rotation.y = rotY;
